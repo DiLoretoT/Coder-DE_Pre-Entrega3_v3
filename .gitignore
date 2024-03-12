@@ -1,5 +1,6 @@
 # .gitignore content
 logs/
 *.log
-
+config/config.ini
 venv
+dags/_pycache_
