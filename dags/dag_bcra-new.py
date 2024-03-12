@@ -3,6 +3,7 @@ from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from datetime import datetime, timedelta
 from scripts.api_fetch import fetch_and_process_data
+from scripts.utils import connect_to_db, load_to_sql
 
 default_args = {
     "owner": "airflow",
@@ -75,3 +76,58 @@ combine_task = PythonOperator(
 for endpoint, _ in endpoints:
     sanitized_endpoint = endpoint.replace("/", "_").replace("(", "").replace(")", "").replace(" ", "_")
     dag.get_task(f'fetch_data_{sanitized_endpoint}').set_downstream(combine_task)
+
+
+def create_redshift_connection(**kwargs):
+    print("Creating Redshift connection...")
+    engine = connect_to_db("config/config.ini", "redshift")
+    # Store the engine in XComs for other tasks to use
+    kwargs['ti'].xcom_push(key='redshift_engine', value=engine)
+
+def load_to_redshift(**kwargs):
+    ti = kwargs['ti']
+    # Retrieve the combined DataFrame from XComs
+    final_df = ti.xcom_pull(task_ids='combine_dataframes')
+    if final_df is not None and not final_df.empty:
+        # Retrieve the Redshift engine from XComs
+        engine = ti.xcom_pull(key='redshift_engine')
+        with engine.connect() as conn, conn.begin():
+            conn.execute("TRUNCATE TABLE tomasmartindl_coderhouse.stg_bcra")
+            load_to_sql(final_df, "stg_bcra", conn, "append")
+            
+            conn.execute("""
+                MERGE INTO tomasmartindl_coderhouse.bcra
+                USING tomasmartindl_coderhouse.stg_bcra AS stg
+                ON tomasmartindl_coderhouse.bcra.date = stg.date
+                AND tomasmartindl_coderhouse.bcra.concept = stg.concept
+                WHEN MATCHED THEN
+                update tomasmartindl_coderhouse.bcra.value = stg.value
+                WHEN NOT MATCHED THEN
+                INSERT (tomasmartindl_coderhouse.bcra.date, tomasmartindl_coderhouse.bcra.concept, tomasmartindl_coderhouse.bcra.value)
+                VALUES (stg.date, stg.concept, stg.value)             
+            """)
+
+        print("Data successfully loaded to Redshift.")
+    else:
+        raise ValueError("No DataFrame to load to Redshift.")
+    
+
+# Task to create Redshift connection
+create_connection_task = PythonOperator(
+    task_id='create_redshift_connection',
+    python_callable=create_redshift_connection,
+    provide_context=True,
+    dag=dag,
+)
+
+# Task to load data to Redshift
+load_to_redshift_task = PythonOperator(
+    task_id='load_to_redshift',
+    python_callable=load_to_redshift,
+    provide_context=True,
+    dag=dag,
+)
+
+# Define task dependencies
+combine_task.set_downstream(create_connection_task)
+create_connection_task.set_downstream(load_to_redshift_task)
