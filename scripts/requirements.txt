@@ -1,0 +1,9 @@
+logging
+pathlib
+airflow
+apache-airflow
+requests==2.25.1
+pandas==2.2.1
+psycopg2==2.9.7
+SQLAlchemy==1.4.51
+redshift_connector==2.1.0

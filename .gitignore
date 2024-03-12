@@ -1,0 +1,5 @@
+# .gitignore content
+logs/
+*.log
+
+venv
