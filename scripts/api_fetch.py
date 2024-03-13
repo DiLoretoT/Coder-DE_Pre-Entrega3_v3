@@ -12,13 +12,17 @@ def fetch_and_process_data(endpoint: str, description: str) -> pd.DataFrame:
     }
     url = f'https://api.estadisticasbcra.com{endpoint}'
     response = requests.get(url, headers=headers)
-    
+    start = datetime.now(pytz.timezone('America/Buenos_Aires')) - timedelta(days=30)
+    end = datetime.now(pytz.timezone('America/Buenos_Aires')) - timedelta(days=1)
+
+
     if response.status_code == 200:
         data = response.json()
         df = pd.DataFrame(data)
         df.rename(columns={'d': 'Date', 'v': 'Value'}, inplace=True)
         df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize('America/Buenos_Aires')
         df['Concept'] = description
+        df = df[(df['Date'] >= start) & (df['Date'] <= end)]
         
         return df
     
