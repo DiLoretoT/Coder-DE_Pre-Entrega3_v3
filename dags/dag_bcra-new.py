@@ -1,9 +1,13 @@
+import logging
 import pandas as pd
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from datetime import datetime, timedelta
 from scripts.api_fetch import fetch_and_process_data
 from scripts.utils import connect_to_db, load_to_sql
+import pytz
+import psycopg2
+from sqlalchemy import create_engine
 
 default_args = {
     "owner": "airflow",
@@ -112,23 +116,60 @@ for endpoint, _ in endpoints:
 #         raise ValueError("No DataFrame to load to Redshift.")
 
 
+
 def load_to_redshift_combined(**kwargs):
     # Assuming config_file_path is stored in Airflow Variables
     ti = kwargs['ti']
     #config_file_path = Variable.get("config_file_path")
     final_df = ti.xcom_pull(task_ids='combine_dataframes')
 
+    
+    
+    conn_url = f"postgresql://tomasmartindl_coderhouse:cr5O1k92Ay@data-engineer-cluster.cyhh5bfevlmn.us-east-1.redshift.amazonaws.com:5439/data-engineer-database"
+    engine = create_engine(conn_url)
+
+
     print("Creating Redshift connection...")
-    engine = connect_to_db("config/config.ini", "redshift")
+    # engine = connect_to_db("/opt/airflow/config/config.ini", "redshift")
+
     if engine is None:
         raise ValueError("Failed to create database engine.")
 
     
     if final_df is not None and not final_df.empty:
-        with engine.connect() as conn, conn.begin():
+        with engine.connect() as conn:
             conn.execute("TRUNCATE TABLE tomasmartindl_coderhouse.stg_bcra")
-            load_to_sql(final_df, "stg_bcra", conn, "append")
-            
+
+            print("stg_bcra TRUNCATED")
+            print("Starting DATA LOAD...")
+
+            # try:
+            #     load_to_sql(final_df, "stg_bcra", conn.connection, "append")
+            #     logging.info("Datos cargados exitosamente en la base de datos STG")
+
+            # except Exception as e:
+            #      logging.error(f"Error al cargar los datos en la base de datos: {e}")
+                
+
+            try:
+                logging.info("Cargando datos en STG_BCRA...")
+                final_df.to_sql(
+                    "stg_bcra",
+                    engine,
+                    if_exists='replace',
+                    index=False,
+                    method="multi"
+                    )
+                
+                logging.info("Datos cargados exitosamente en la base de datos STG_BCRA")
+            except Exception as e:
+                logging.error(f"Error al cargar los datos en la base de datos: {e}")
+
+
+            print("Starting data MERGE")
+
+
+
             conn.execute("""
                 MERGE INTO tomasmartindl_coderhouse.bcra AS target
                 USING (SELECT date, concept, value FROM tomasmartindl_coderhouse.stg_bcra) AS source
@@ -145,6 +186,14 @@ def load_to_redshift_combined(**kwargs):
             #     SELECT date, concept, value FROM tomasmartindl_coderhouse.stg_bcra
             #     ON CONFLICT (date, concept) 
             #     DO UPDATE SET value = EXCLUDED.value;
+            # """)
+
+
+            # conn.execute("""
+            # INSERT INTO tomasmartindl_coderhouse.bcra (date, concept, value)
+            # SELECT date, concept, value FROM tomasmartindl_coderhouse.stg_bcra
+            # ON CONFLICT (date, concept) DO UPDATE
+            # SET value = EXCLUDED.value;
             # """)
 
         print("Data successfully loaded to Redshift.")
